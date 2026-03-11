@@ -1,0 +1,167 @@
+import streamlit as st
+import numpy as np
+import pandas as pd
+import xgboost as xgb
+import matplotlib.pyplot as plt
+import pickle
+
+# -------------------------------------------------------
+# 1️⃣ Load the data
+# -------------------------------------------------------
+data = pd.read_csv("Stock Market.csv")
+
+# -------------------------------------------------------
+# 2️⃣ Ensure date column is datetime
+# -------------------------------------------------------
+
+data['Date'] = data['Date'].apply(lambda x: ''.join([c for c in x if isinstance(c, str)]))
+
+data['Date'] = data['Date'].str.replace(r"(\\d{2})(\\d{2})(\\d{4})", r"\\1-\\2-\\3", regex=True)
+
+data['Date'] = pd.to_datetime(data['Date'],format="%d-%m-%Y", dayfirst=True)
+data = data.sort_values("Date")
+data.set_index("Date", inplace=True)
+
+# -------------------------------------------------------
+# 3️⃣ Load the trained model
+# -------------------------------------------------------
+model = pickle.load(open("xgb_model.pkl", "rb"))
+
+
+# -------------------------------------------------------
+# 4️⃣ Use only closing price for prediction
+# -------------------------------------------------------
+df = pd.read_csv("Stock Market.csv", parse_dates=["Date"], index_col="Date")
+
+# -------------------------------------------------------
+# 5️⃣ FEATURE ENGINEERING
+# -------------------------------------------------------
+
+df['ma7'] = df['Close'].rolling(7).mean()
+df['ma14'] = df['Close'].rolling(14).mean()
+df['ma21'] = df['Close'].rolling(21).mean()
+df['volatility'] = df['Close'].rolling(7).std() 
+
+df = df.dropna()
+
+X = df[[ 'ma7', 'ma14', 'ma21', 'volatility']]
+y = df['Close']
+
+# -------------------------------------------------------
+# 6️⃣ TRAIN XGBOOST MODEL
+# -------------------------------------------------------
+model = xgb.XGBRegressor(
+    n_estimators=300,
+    learning_rate=0.05,
+    max_depth=5,
+    subsample=0.8,
+    random_state=42,
+    objective='reg:squarederror'
+)
+
+model.fit(X, y)
+
+# -------------------------------------------------------
+# 7️⃣ SAVE MODEL (works for XGBoost 3.1.1)
+# -------------------------------------------------------
+model.save_model("xgb_model.json")
+
+# -------------------------------------------------------
+# 8️⃣ Streamlit App Title
+# -------------------------------------------------------
+st.title("📈 Apple Stock Price Prediction App")
+st.write("This app predicts stock prices of Apple for next 30 days using a trained XGBoost model.")
+
+# -------------------------------------------------------
+# 9️⃣ User Inputs
+# -------------------------------------------------------
+# --- User date range selection ---
+
+st.sidebar.header('Selct the date range for prediction')
+
+start_date = st.sidebar.date_input("Select Start Date", data.index.min().date())
+end_date = st.sidebar.date_input("Select End Date", data.index.max().date())
+
+if start_date >= end_date:
+    st.sidebar.error("End Date must be after Start Date")
+
+filtered = data.loc[start_date:end_date]
+
+if st.sidebar.button("Submit"):
+ st.subheader("📊 Historical Stock Price") 
+ st.line_chart(filtered['Adj Close'])
+
+
+#-------------------------------------------------------
+# 1️⃣0️⃣ 30-DAY FUTURE PREDICTION
+# -------------------------------------------------------
+def predict_next_30_days(model, df):
+    last_data = data[['Close']].copy()
+    last_data['ma7'] = last_data['Close'].rolling(7).mean()
+    last_data['ma14'] = last_data['Close'].rolling(14).mean()
+    last_data['ma21'] = last_data['Close'].rolling(21).mean()
+    last_data['volatility'] = last_data['Close'].rolling(7).std() 
+    
+    last_data = last_data.dropna()
+
+    last_row = last_data.iloc[-1]
+
+    future_predictions = []
+    current_close = last_row['Close']
+    ma7 = last_row['ma7']
+    ma14 = last_row['ma14']
+    ma21 = last_row['ma21']
+    vol = last_row['volatility']
+
+    for i in range(30):
+        X_pred = np.array([[ma7, ma14, ma21, vol]])
+        next_close = model.predict(X_pred)[0]
+        future_predictions.append(next_close)
+
+        # Update features
+        vol = (next_close - current_close) / current_close
+        current_close = next_close
+        ma7 = (ma7 * 6 + next_close) / 7
+        ma14 = (ma14 * 13 + next_close) / 14
+        ma21 = (ma21 * 20 + next_close) / 21
+
+    return future_predictions
+
+#-------------------------------------------------------
+# 1️⃣1️⃣ Generate predictions
+#-------------------------------------------------------
+
+predicted = predict_next_30_days(model, data)
+
+future_dates = pd.date_range(data.index[-1], periods=30, freq='D')
+
+pred_df = pd.DataFrame({
+    "Date": future_dates,
+    "Predicted Close": predicted
+}).set_index("Date")
+
+st.subheader("📈 Predicted Prices for the Next 30 Days")
+st.line_chart(pred_df)
+
+#-------------------------------------------------------
+# 1️⃣2️⃣ Show prediction table
+#-------------------------------------------------------
+
+st.subheader("🧾 Predicted Prices for the Next 30 Days")
+st.dataframe(pred_df)
+
+st.success("Prediction Generated Successfully!")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
